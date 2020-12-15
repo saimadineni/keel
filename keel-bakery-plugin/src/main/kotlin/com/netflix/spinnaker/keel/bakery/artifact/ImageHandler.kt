@@ -1,6 +1,6 @@
 package com.netflix.spinnaker.keel.bakery.artifact
 
-import com.netflix.spinnaker.igor.ArtifactService
+import com.netflix.spinnaker.keel.igor.artifact.ArtifactService
 import com.netflix.spinnaker.keel.actuation.ArtifactHandler
 import com.netflix.spinnaker.keel.api.ResourceDiff
 import com.netflix.spinnaker.keel.api.actuation.Task
@@ -14,6 +14,10 @@ import com.netflix.spinnaker.keel.clouddriver.ImageService
 import com.netflix.spinnaker.keel.clouddriver.model.Image
 import com.netflix.spinnaker.keel.core.NoKnownArtifactVersions
 import com.netflix.spinnaker.keel.diff.DefaultResourceDiff
+import com.netflix.spinnaker.keel.lifecycle.LifecycleEvent
+import com.netflix.spinnaker.keel.lifecycle.LifecycleEventScope.PRE_DEPLOYMENT
+import com.netflix.spinnaker.keel.lifecycle.LifecycleEventStatus.NOT_STARTED
+import com.netflix.spinnaker.keel.lifecycle.LifecycleEventType.BAKE
 import com.netflix.spinnaker.keel.model.Job
 import com.netflix.spinnaker.keel.parseAppVersion
 import com.netflix.spinnaker.keel.persistence.DiffFingerprintRepository
@@ -169,6 +173,17 @@ class ImageHandler(
         parameters = mapOf("delta" to diff.toDebug())
       )
       publisher.publishEvent(BakeLaunched(desiredVersion))
+      publisher.publishEvent(LifecycleEvent(
+        scope = PRE_DEPLOYMENT,
+        artifactRef = artifact.toLifecycleRef(),
+        artifactVersion = desiredVersion,
+        type = BAKE,
+        id = "bake-$desiredVersion",
+        status = NOT_STARTED,
+        text = "Launching bake for $version",
+        link = taskRef.id,
+        startMonitoring = true
+      ))
       return listOf(Task(id = taskRef.id, name = description))
     } catch (e: Exception) {
       log.error("Error launching bake for: $description")

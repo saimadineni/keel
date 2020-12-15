@@ -7,10 +7,10 @@ import com.netflix.spinnaker.keel.api.artifacts.ArtifactMetadata
 import com.netflix.spinnaker.keel.api.artifacts.ArtifactStatus
 import com.netflix.spinnaker.keel.api.artifacts.ArtifactType
 import com.netflix.spinnaker.keel.api.artifacts.DeliveryArtifact
-import com.netflix.spinnaker.keel.api.artifacts.GitMetadata
 import com.netflix.spinnaker.keel.api.artifacts.PublishedArtifact
 import com.netflix.spinnaker.keel.api.constraints.ConstraintState
 import com.netflix.spinnaker.keel.api.persistence.KeelReadOnlyRepository
+import com.netflix.spinnaker.keel.api.verification.VerificationContext
 import com.netflix.spinnaker.keel.core.api.ApplicationSummary
 import com.netflix.spinnaker.keel.core.api.ArtifactSummaryInEnvironment
 import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactPin
@@ -18,6 +18,7 @@ import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactVeto
 import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactVetoes
 import com.netflix.spinnaker.keel.core.api.EnvironmentSummary
 import com.netflix.spinnaker.keel.core.api.PinnedEnvironment
+import com.netflix.spinnaker.keel.core.api.PromotionStatus
 import com.netflix.spinnaker.keel.core.api.SubmittedDeliveryConfig
 import com.netflix.spinnaker.keel.core.api.UID
 import com.netflix.spinnaker.keel.diff.DefaultResourceDiff
@@ -144,7 +145,7 @@ interface KeelRepository : KeelReadOnlyRepository {
   // START ArtifactRepository methods
   fun register(artifact: DeliveryArtifact)
 
-  fun getAllArtifacts(type: ArtifactType? = null): List<DeliveryArtifact>
+  fun getAllArtifacts(type: ArtifactType? = null, name: String? = null): List<DeliveryArtifact>
 
   fun storeArtifactVersion(artifactVersion: PublishedArtifact): Boolean
 
@@ -198,14 +199,27 @@ interface KeelRepository : KeelReadOnlyRepository {
   ): ArtifactSummaryInEnvironment?
 
   /**
-   * Given artifact details and promotion status, return its last deployed version git metadata, sorted by deployed_at
+   * Return the published artifact for the last deployed version that matches the promotion status
    */
-  fun getGitMetadataByPromotionStatus(
+  fun getArtifactVersionByPromotionStatus(
     deliveryConfig: DeliveryConfig,
     environmentName: String,
     artifact: DeliveryArtifact,
-    promotionStatus: String
-  ): GitMetadata?
+    promotionStatus: PromotionStatus,
+    version: String? = null
+  ): PublishedArtifact?
+
+  /**
+   * Return a specific artifact version if is pinned, from [targetEnvironment], by [reference], if exists.
+   */
+  fun getPinnedVersion(deliveryConfig: DeliveryConfig, targetEnvironment: String, reference: String): String?
 
   // END ArtifactRepository methods
+
+  // START VerificationRepository methods
+  fun nextEnvironmentsForVerification(
+    minTimeSinceLastCheck: Duration,
+    limit: Int
+  ) : Collection<VerificationContext>
+  // END VerificationRepository methods
 }

@@ -197,3 +197,18 @@ databaseChangeLog:
   - include:
       file: changelog/20201116-foreign-keys.yml
       relativeToChangelogFile: true
+  - include:
+      file: changelog/20201120-foreign-keys-for-verification-table.yml
+      relativeToChangelogFile: true
+  - include:
+      file: changelog/20201016-create-lifecycle-events.yml
+      relativeToChangelogFile: true
+  - include:
+      file: changelog/20201203-cleanup-event-and-paused-orhpans.yml
+      relativeToChangelogFile: true
+  - include:
+      file: changelog/20201130-environment-last-verified.yml
+      relativeToChangelogFile: true
+  - include:
+      file: changelog/20201208-fix-environment-last-verified-cascade.yml
+      relativeToChangelogFile: true

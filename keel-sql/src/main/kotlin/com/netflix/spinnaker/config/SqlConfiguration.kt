@@ -1,6 +1,7 @@
 package com.netflix.spinnaker.config
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.netflix.spectator.api.Registry
 import com.netflix.spinnaker.keel.api.plugins.ArtifactSupplier
 import com.netflix.spinnaker.keel.events.PersistentEvent.Companion.clock
 import com.netflix.spinnaker.keel.resources.ResourceSpecIdentifier
@@ -10,6 +11,8 @@ import com.netflix.spinnaker.keel.sql.SqlAgentLockRepository
 import com.netflix.spinnaker.keel.sql.SqlArtifactRepository
 import com.netflix.spinnaker.keel.sql.SqlDeliveryConfigRepository
 import com.netflix.spinnaker.keel.sql.SqlDiffFingerprintRepository
+import com.netflix.spinnaker.keel.sql.SqlLifecycleEventRepository
+import com.netflix.spinnaker.keel.sql.SqlLifecycleMonitorRepository
 import com.netflix.spinnaker.keel.sql.SqlNotificationRepository
 import com.netflix.spinnaker.keel.sql.SqlPausedRepository
 import com.netflix.spinnaker.keel.sql.SqlResourceRepository
@@ -25,6 +28,7 @@ import org.jooq.DSLContext
 import org.jooq.impl.DefaultConfiguration
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Import
@@ -59,11 +63,29 @@ class SqlConfiguration {
     specMigrators: List<SpecMigrator<*, *>>,
     objectMapper: ObjectMapper
   ) =
-    SqlResourceRepository(jooq, clock, resourceSpecIdentifier, specMigrators, objectMapper, SqlRetry(sqlRetryProperties))
+    SqlResourceRepository(
+      jooq,
+      clock,
+      resourceSpecIdentifier,
+      specMigrators,
+      objectMapper,
+      SqlRetry(sqlRetryProperties)
+    )
 
   @Bean
-  fun artifactRepository(jooq: DSLContext, clock: Clock, objectMapper: ObjectMapper, artifactSuppliers: List<ArtifactSupplier<*, *>>) =
-    SqlArtifactRepository(jooq, clock, objectMapper, SqlRetry(sqlRetryProperties), artifactSuppliers)
+  fun artifactRepository(
+    jooq: DSLContext,
+    clock: Clock,
+    objectMapper: ObjectMapper,
+    artifactSuppliers: List<ArtifactSupplier<*, *>>
+  ) =
+    SqlArtifactRepository(
+      jooq,
+      clock,
+      objectMapper,
+      SqlRetry(sqlRetryProperties),
+      artifactSuppliers
+    )
 
   @Bean
   fun deliveryConfigRepository(
@@ -78,7 +100,7 @@ class SqlConfiguration {
       jooq = jooq,
       clock = clock,
       resourceSpecIdentifier = resourceSpecIdentifier,
-      mapper = objectMapper,
+      objectMapper = objectMapper,
       sqlRetry = SqlRetry(sqlRetryProperties),
       artifactSuppliers = artifactSuppliers,
       specMigrators = specMigrators
@@ -132,6 +154,37 @@ class SqlConfiguration {
   @Bean
   fun verificationRepository(
     jooq: DSLContext,
-    clock: Clock
-  ) = SqlVerificationRepository(jooq, clock)
+    clock: Clock,
+    resourceSpecIdentifier: ResourceSpecIdentifier,
+    objectMapper: ObjectMapper,
+    artifactSuppliers: List<ArtifactSupplier<*, *>>,
+    specMigrators: List<SpecMigrator<*, *>>
+  ) = SqlVerificationRepository(
+    jooq,
+    clock,
+    resourceSpecIdentifier,
+    objectMapper,
+    SqlRetry(sqlRetryProperties),
+    artifactSuppliers,
+    specMigrators
+  )
+
+  @Bean
+  fun lifecycleEventRepository(
+    jooq: DSLContext,
+    clock: Clock,
+    properties: SqlProperties,
+    objectMapper: ObjectMapper,
+    spectator: Registry,
+    publisher: ApplicationEventPublisher
+  ) =
+    SqlLifecycleEventRepository(clock, jooq, SqlRetry(sqlRetryProperties), spectator, publisher)
+
+  @Bean
+  fun lifecycleMonitorRepository(
+    jooq: DSLContext,
+    clock: Clock,
+    properties: SqlProperties,
+    objectMapper: ObjectMapper
+  ) = SqlLifecycleMonitorRepository(jooq, clock, objectMapper, SqlRetry(sqlRetryProperties))
 }

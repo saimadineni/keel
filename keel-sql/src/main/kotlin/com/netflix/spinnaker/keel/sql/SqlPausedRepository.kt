@@ -25,9 +25,8 @@ import com.netflix.spinnaker.keel.persistence.PausedRepository
 import com.netflix.spinnaker.keel.persistence.metamodel.Tables.PAUSED
 import com.netflix.spinnaker.keel.sql.RetryCategory.READ
 import com.netflix.spinnaker.keel.sql.RetryCategory.WRITE
-import java.time.Clock
-import java.time.ZoneOffset
 import org.jooq.DSLContext
+import java.time.Clock
 
 class SqlPausedRepository(
   val jooq: DSLContext,
@@ -40,10 +39,10 @@ class SqlPausedRepository(
       jooq
         .select(PAUSED.PAUSED_AT, PAUSED.PAUSED_BY)
         .from(PAUSED)
-        .where(PAUSED.SCOPE.eq(scope.name))
+        .where(PAUSED.SCOPE.eq(scope))
         .and(PAUSED.NAME.eq(name))
         .fetchOne { (timestamp, user) ->
-          Pause(scope, name, user, timestamp.toInstant(ZoneOffset.UTC))
+          Pause(scope, name, user, timestamp)
         }
     }
   }
@@ -80,9 +79,9 @@ class SqlPausedRepository(
     sqlRetry.withRetry(WRITE) {
       jooq
         .insertInto(PAUSED)
-        .set(PAUSED.SCOPE, scope.name)
+        .set(PAUSED.SCOPE, scope)
         .set(PAUSED.NAME, name)
-        .set(PAUSED.PAUSED_AT, clock.instant().toTimestamp())
+        .set(PAUSED.PAUSED_AT, clock.instant())
         .set(PAUSED.PAUSED_BY, user)
         .onDuplicateKeyIgnore()
         .execute()
@@ -93,7 +92,7 @@ class SqlPausedRepository(
     sqlRetry.withRetry(WRITE) {
       jooq
         .deleteFrom(PAUSED)
-        .where(PAUSED.SCOPE.eq(scope.name))
+        .where(PAUSED.SCOPE.eq(scope))
         .and(PAUSED.NAME.eq(name))
         .execute()
     }
@@ -104,7 +103,7 @@ class SqlPausedRepository(
       jooq
         .select(PAUSED.NAME)
         .from(PAUSED)
-        .where(PAUSED.SCOPE.eq(scope.name))
+        .where(PAUSED.SCOPE.eq(scope))
         .and(PAUSED.NAME.eq(name))
         .fetchOne()
     } != null
@@ -115,7 +114,7 @@ class SqlPausedRepository(
       jooq
         .select(PAUSED.NAME)
         .from(PAUSED)
-        .where(PAUSED.SCOPE.eq(scope.name))
+        .where(PAUSED.SCOPE.eq(scope))
         .fetch(PAUSED.NAME)
     }
 }

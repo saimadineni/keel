@@ -13,12 +13,15 @@ import com.netflix.spinnaker.keel.api.artifacts.DeliveryArtifact
 import com.netflix.spinnaker.keel.api.artifacts.PublishedArtifact
 import com.netflix.spinnaker.keel.api.constraints.ConstraintState
 import com.netflix.spinnaker.keel.api.events.ArtifactRegisteredEvent
+import com.netflix.spinnaker.keel.api.verification.VerificationContext
+import com.netflix.spinnaker.keel.api.verification.VerificationRepository
 import com.netflix.spinnaker.keel.core.api.ApplicationSummary
 import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactPin
 import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactVeto
 import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactVetoes
 import com.netflix.spinnaker.keel.core.api.EnvironmentSummary
 import com.netflix.spinnaker.keel.core.api.PinnedEnvironment
+import com.netflix.spinnaker.keel.core.api.PromotionStatus
 import com.netflix.spinnaker.keel.core.api.SubmittedDeliveryConfig
 import com.netflix.spinnaker.keel.core.api.UID
 import com.netflix.spinnaker.keel.core.api.normalize
@@ -50,6 +53,7 @@ class CombinedRepository(
   val deliveryConfigRepository: DeliveryConfigRepository,
   val artifactRepository: ArtifactRepository,
   val resourceRepository: ResourceRepository,
+  val verificationRepository: VerificationRepository,
   override val clock: Clock,
   override val publisher: ApplicationEventPublisher,
   val objectMapper: ObjectMapper
@@ -317,8 +321,8 @@ class CombinedRepository(
   override fun isRegistered(name: String, type: ArtifactType): Boolean =
     artifactRepository.isRegistered(name, type)
 
-  override fun getAllArtifacts(type: ArtifactType?): List<DeliveryArtifact> =
-    artifactRepository.getAll(type)
+  override fun getAllArtifacts(type: ArtifactType?, name: String?): List<DeliveryArtifact> =
+    artifactRepository.getAll(type, name)
 
   override fun storeArtifactVersion(artifactVersion: PublishedArtifact): Boolean =
     artifactRepository.storeArtifactVersion(artifactVersion)
@@ -401,14 +405,26 @@ class CombinedRepository(
     deliveryConfig, environmentName, artifactReference, version
   )
 
-  override fun getGitMetadataByPromotionStatus(
+  override fun getArtifactVersionByPromotionStatus(
     deliveryConfig: DeliveryConfig,
     environmentName: String,
     artifact: DeliveryArtifact,
-    promotionStatus: String
-  ) = artifactRepository.getGitMetadataByPromotionStatus(
-    deliveryConfig, environmentName, artifact, promotionStatus
+    promotionStatus: PromotionStatus,
+    version: String?
+  ) = artifactRepository.getArtifactVersionByPromotionStatus(
+    deliveryConfig, environmentName, artifact, promotionStatus, version
   )
 
+  override fun getPinnedVersion(deliveryConfig: DeliveryConfig, targetEnvironment: String, reference: String)
+    = artifactRepository.getPinnedVersion(deliveryConfig, targetEnvironment, reference)
+
   // END ArtifactRepository methods
+
+  // START VerificationRepository methods
+  override fun nextEnvironmentsForVerification(
+    minTimeSinceLastCheck: Duration,
+    limit: Int
+  ) : Collection<VerificationContext> =
+    verificationRepository.nextEnvironmentsForVerification(minTimeSinceLastCheck, limit)
+  // END VerificationRepository methods
 }

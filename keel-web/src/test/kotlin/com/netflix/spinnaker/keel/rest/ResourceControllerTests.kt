@@ -9,7 +9,6 @@ import com.netflix.spinnaker.keel.rest.AuthorizationSupport.Action.READ
 import com.netflix.spinnaker.keel.rest.AuthorizationSupport.Action.WRITE
 import com.netflix.spinnaker.keel.rest.AuthorizationSupport.TargetEntity.APPLICATION
 import com.netflix.spinnaker.keel.rest.AuthorizationSupport.TargetEntity.RESOURCE
-import com.netflix.spinnaker.keel.spring.test.DisableSpringScheduling
 import com.netflix.spinnaker.keel.spring.test.MockEurekaConfiguration
 import com.netflix.spinnaker.keel.test.resource
 import com.netflix.spinnaker.keel.test.submittedResource
@@ -40,20 +39,17 @@ import strikt.assertions.isNotNull
   webEnvironment = MOCK
 )
 @AutoConfigureMockMvc
-@DisableSpringScheduling
-internal class ResourceControllerTests : JUnit5Minutests {
-  @Autowired
-  lateinit var mvc: MockMvc
+internal class ResourceControllerTests
+@Autowired constructor(
+  val mvc: MockMvc,
+  @Qualifier("jsonMapper") val jsonMapper: ObjectMapper
+) : JUnit5Minutests {
 
   @MockkBean
   lateinit var repository: KeelRepository
 
   @MockkBean
   lateinit var authorizationSupport: AuthorizationSupport
-
-  @Qualifier("jsonMapper")
-  @Autowired
-  lateinit var jsonMapper: ObjectMapper
 
   @MockkBean
   lateinit var adHocDiffer: AdHocDiffer

@@ -1,7 +1,6 @@
 package com.netflix.spinnaker.keel.rest
 
 import com.netflix.spinnaker.keel.KeelApplication
-import com.netflix.spinnaker.keel.spring.test.DisableSpringScheduling
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -22,14 +21,11 @@ import java.util.concurrent.TimeoutException
   classes = [KeelApplication::class, ThreadCapturingEventListener::class],
   webEnvironment = MOCK
 )
-@DisableSpringScheduling
-internal class ApplicationEventTests {
-
-  @Autowired
-  lateinit var publisher: ApplicationEventPublisher
-
-  @Autowired
-  lateinit var listener: ThreadCapturingEventListener
+internal class ApplicationEventTests
+@Autowired constructor(
+  val publisher: ApplicationEventPublisher,
+  val listener: ThreadCapturingEventListener
+) {
 
   @Test
   fun `events are dispatched on a different thread`() {
@@ -37,7 +33,7 @@ internal class ApplicationEventTests {
 
     publisher.publishEvent(TestEvent(this))
 
-    val eventThread = listener.awaitInvoked(Duration.ofMillis(300))
+    val eventThread = listener.awaitInvoked(Duration.ofMillis(500))
 
     expectThat(eventThread)
       .isNotEqualTo(testThread)

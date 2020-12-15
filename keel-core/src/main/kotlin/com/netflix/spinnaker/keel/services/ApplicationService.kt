@@ -8,7 +8,6 @@ import com.netflix.spinnaker.keel.api.ScmInfo
 import com.netflix.spinnaker.keel.api.StatefulConstraint
 import com.netflix.spinnaker.keel.api.artifacts.DEFAULT_MAX_ARTIFACT_VERSIONS
 import com.netflix.spinnaker.keel.api.artifacts.DeliveryArtifact
-import com.netflix.spinnaker.keel.api.artifacts.GitMetadata
 import com.netflix.spinnaker.keel.api.artifacts.PublishedArtifact
 import com.netflix.spinnaker.keel.api.constraints.ConstraintState
 import com.netflix.spinnaker.keel.api.constraints.ConstraintStatus
@@ -18,6 +17,7 @@ import com.netflix.spinnaker.keel.api.constraints.UpdatedConstraintStatus
 import com.netflix.spinnaker.keel.api.plugins.ArtifactSupplier
 import com.netflix.spinnaker.keel.api.plugins.ConstraintEvaluator
 import com.netflix.spinnaker.keel.api.plugins.supporting
+import com.netflix.spinnaker.keel.artifacts.generateCompareLink
 import com.netflix.spinnaker.keel.core.api.AllowedTimesConstraintMetadata
 import com.netflix.spinnaker.keel.core.api.ArtifactSummary
 import com.netflix.spinnaker.keel.core.api.ArtifactSummaryInEnvironment
@@ -28,6 +28,7 @@ import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactPin
 import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactVeto
 import com.netflix.spinnaker.keel.core.api.EnvironmentSummary
 import com.netflix.spinnaker.keel.core.api.PromotionStatus
+import com.netflix.spinnaker.keel.core.api.PromotionStatus.APPROVED
 import com.netflix.spinnaker.keel.core.api.PromotionStatus.CURRENT
 import com.netflix.spinnaker.keel.core.api.PromotionStatus.DEPLOYING
 import com.netflix.spinnaker.keel.core.api.PromotionStatus.PENDING
@@ -41,11 +42,10 @@ import com.netflix.spinnaker.keel.core.api.TimeWindowConstraint
 import com.netflix.spinnaker.keel.exceptions.InvalidConstraintException
 import com.netflix.spinnaker.keel.exceptions.InvalidSystemStateException
 import com.netflix.spinnaker.keel.exceptions.InvalidVetoException
-import com.netflix.spinnaker.keel.exceptions.UnsupportedScmType
+import com.netflix.spinnaker.keel.lifecycle.LifecycleEventRepository
 import com.netflix.spinnaker.keel.persistence.ArtifactNotFoundException
 import com.netflix.spinnaker.keel.persistence.KeelRepository
 import com.netflix.spinnaker.keel.persistence.NoSuchDeliveryConfigException
-import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.time.Instant
@@ -59,7 +59,8 @@ class ApplicationService(
   private val resourceStatusService: ResourceStatusService,
   private val constraintEvaluators: List<ConstraintEvaluator<*>>,
   private val artifactSuppliers: List<ArtifactSupplier<*, *>>,
-  private val scmInfo: ScmInfo
+  private val scmInfo: ScmInfo,
+  private val lifecycleEventRepository: LifecycleEventRepository
 ) {
   private val log by lazy { LoggerFactory.getLogger(javaClass) }
 
@@ -138,6 +139,15 @@ class ApplicationService(
     )
   }
 
+  fun getSummariesAllEntities(application: String): Map<String, Any> {
+    val summaries: MutableMap<String, Any> = mutableMapOf()
+    summaries["resources"] = getResourceSummariesFor(application)
+    val envSummary = getEnvironmentSummariesFor(application)
+    summaries["environments"] = envSummary
+    summaries["artifacts"] = getArtifactSummariesFor(application, envSummary)
+    return summaries
+  }
+
   /**
    * Returns a list of [ResourceSummary] for the specified application.
    */
@@ -189,29 +199,38 @@ class ApplicationService(
    * This function assumes there's a single delivery config associated with the application.
    */
   fun getArtifactSummariesFor(application: String, limit: Int = DEFAULT_MAX_ARTIFACT_VERSIONS): List<ArtifactSummary> {
+    val environmentSummaries = getEnvironmentSummariesFor(application)
+    return getArtifactSummariesFor(application, environmentSummaries, limit)
+  }
+
+  /**
+   * If we've already calculated the env summaries, pass them in so we don't have to query again.
+   * It's non-trivial to pull that data.
+   */
+  fun getArtifactSummariesFor(application: String, envSummaries: List<EnvironmentSummary>, limit: Int = DEFAULT_MAX_ARTIFACT_VERSIONS): List<ArtifactSummary> {
     val deliveryConfig = try {
       repository.getDeliveryConfigForApplication(application)
     } catch (e: NoSuchDeliveryConfigException) {
       return emptyList()
     }
 
-    val environmentSummaries = getEnvironmentSummariesFor(application)
-
     val artifactSummaries = deliveryConfig.artifacts.map { artifact ->
       val artifactVersionSummaries = repository.artifactVersions(artifact, limit).map { artifactVersion ->
         val artifactSummariesInEnvironments = mutableSetOf<ArtifactSummaryInEnvironment>()
 
-        environmentSummaries.forEach { environmentSummary ->
+        envSummaries.forEach { environmentSummary ->
           val environment = deliveryConfig.environments.find { it.name == environmentSummary.name }!!
           environmentSummary.getArtifactPromotionStatus(artifact, artifactVersion.version)
             ?.let { status ->
-              buildArtifactSummaryInEnvironment(deliveryConfig, environment.name, artifact, artifactVersion.version, status)
-                ?.also {
-                  artifactSummariesInEnvironments.add(
-                    it.addStatefulConstraintSummaries(deliveryConfig, environment, artifactVersion.version)
-                      .addStatelessConstraintSummaries(deliveryConfig, environment, artifactVersion.version, artifact)
-                  )
-                }
+              if ( artifact.isUsedIn(environment)) { // only add a summary if the artifact is used in the environment
+                buildArtifactSummaryInEnvironment(deliveryConfig, environment.name, artifact, artifactVersion.version, status)
+                  ?.also {
+                    artifactSummariesInEnvironments.add(
+                      it.addStatefulConstraintSummaries(deliveryConfig, environment, artifactVersion.version)
+                        .addStatelessConstraintSummaries(deliveryConfig, environment, artifactVersion.version, artifact)
+                    )
+                  }
+              }
             }
         }
 
@@ -229,8 +248,7 @@ class ApplicationService(
   }
 
   private fun buildArtifactSummaryInEnvironment(deliveryConfig: DeliveryConfig, environmentName: String, artifact: DeliveryArtifact, version: String, status: PromotionStatus): ArtifactSummaryInEnvironment? {
-    val artifactGitMetadata = getArtifactInstance(artifact, version)?.gitMetadata
-    val baseScmUrl = artifactGitMetadata?.commitInfo?.link?.let { getScmBaseLink(it) }
+    val currentArtifact = getArtifactInstance(artifact, version)
 
     // some environments contain relevant info for skipped artifacts, so
     // try and find that summary before defaulting to less information
@@ -242,16 +260,17 @@ class ApplicationService(
         version = version
       )
 
+    val pinnedArtifact = getPinnedArtifact(deliveryConfig, environmentName, artifact, version)
+
     return when (status) {
       PENDING -> {
-        val olderGitMetadata = repository.getGitMetadataByPromotionStatus(deliveryConfig, environmentName, artifact, CURRENT.name)
-
+        val olderArtifactVersion = pinnedArtifact?: repository.getArtifactVersionByPromotionStatus(deliveryConfig, environmentName, artifact, CURRENT)
         ArtifactSummaryInEnvironment(
           environment = environmentName,
           version = version,
           state = status.name.toLowerCase(),
           // comparing PENDING (version in question, new code) vs. CURRENT (old code)
-          compareLink = generateDiffLink(baseScmUrl, artifactGitMetadata, olderGitMetadata)
+          compareLink = generateCompareLink(scmInfo, currentArtifact, olderArtifactVersion, artifact)
         )
       }
       SKIPPED -> {
@@ -265,29 +284,43 @@ class ApplicationService(
           potentialSummary
         }
       }
-      DEPLOYING -> {
-        val olderGitMetadata = repository.getGitMetadataByPromotionStatus(deliveryConfig, environmentName, artifact, CURRENT.name)
+
+      DEPLOYING, APPROVED -> {
+        val olderArtifactVersion = pinnedArtifact?: repository.getArtifactVersionByPromotionStatus(deliveryConfig, environmentName, artifact, CURRENT)
         potentialSummary?.copy(
-          // comparing DEPLOYING (version in question, new code) vs. CURRENT (old code)
-          compareLink = generateDiffLink(baseScmUrl, artifactGitMetadata, olderGitMetadata)
+          // comparing DEPLOYING/APPROVED (version in question, new code) vs. CURRENT (old code)
+          compareLink = generateCompareLink(scmInfo, currentArtifact, olderArtifactVersion, artifact)
         )
       }
       PREVIOUS -> {
-        val newerGitMetadata = potentialSummary?.replacedBy?.let { getArtifactInstance(artifact, it)?.gitMetadata }
+        val newerArtifactVersion = potentialSummary?.replacedBy?.let { getArtifactInstance(artifact, it) }
         potentialSummary?.copy(
           //comparing PREVIOUS (version in question, old code) vs. the version which replaced it (new code)
-          compareLink = generateDiffLink(baseScmUrl, newerGitMetadata, artifactGitMetadata)
+          //pinned artifact should not be consider here, as we know exactly which version replace the current one
+          compareLink = generateCompareLink(scmInfo, currentArtifact, newerArtifactVersion, artifact)
         )
       }
       CURRENT -> {
-        val olderGitMetadata = repository.getGitMetadataByPromotionStatus(deliveryConfig, environmentName, artifact, PREVIOUS.name)
+        val olderArtifactVersion = pinnedArtifact?: repository.getArtifactVersionByPromotionStatus(deliveryConfig, environmentName, artifact, PREVIOUS)
         potentialSummary?.copy(
           // comparing CURRENT (version in question, new code) vs. PREVIOUS (old code)
-          compareLink = generateDiffLink(baseScmUrl, artifactGitMetadata, olderGitMetadata)
+          compareLink = generateCompareLink(scmInfo, currentArtifact, olderArtifactVersion, artifact)
         )
       }
       else -> potentialSummary
     }
+  }
+
+  // Pinning is a special case when is coming to creating a compare link between versions.
+  // If there is a pinned version, which is not the same as the current version, we need
+  // to make sure we are creating the comparable link with reference to the pinned version.
+  private fun getPinnedArtifact(deliveryConfig: DeliveryConfig, environmentName: String, artifact: DeliveryArtifact, version: String): PublishedArtifact? {
+    val pinnedVersion = repository.getPinnedVersion(deliveryConfig, environmentName, artifact.reference)
+     return if (pinnedVersion != version)
+      pinnedVersion?.let { getArtifactInstance(artifact, it) }
+    else { //if pinnedVersion == current version, fetch the version which that the pinned version replaced
+       repository.getArtifactVersionByPromotionStatus(deliveryConfig, environmentName, artifact, PREVIOUS, pinnedVersion)
+     }
   }
 
   /**
@@ -370,7 +403,8 @@ class ApplicationService(
       build = artifactInstance.buildMetadata
         ?: artifactSupplier.parseDefaultBuildMetadata(artifactInstance, artifact.sortingStrategy),
       git = artifactInstance.gitMetadata
-        ?: artifactSupplier.parseDefaultGitMetadata(artifactInstance, artifact.sortingStrategy)
+        ?: artifactSupplier.parseDefaultGitMetadata(artifactInstance, artifact.sortingStrategy),
+      lifecycleSteps = lifecycleEventRepository.getSteps(artifact, artifactInstance.version)
     )
   }
 
@@ -388,27 +422,4 @@ class ApplicationService(
     return repository.getArtifactVersion(artifact, version, releaseStatus)
   }
 
-  // Generating a SCM diff link between source and target versions (the order does matter!)
-  private fun generateDiffLink(baseUrl: String?, newerGitMetadata: GitMetadata?, olderGitMetadata: GitMetadata?): String? {
-    return if (baseUrl != null && newerGitMetadata != null && olderGitMetadata != null) {
-          "$baseUrl/projects/${newerGitMetadata.project}/repos/${newerGitMetadata.repo?.name}/compare/commits?" +
-            "targetBranch=${olderGitMetadata.commitInfo?.sha}&sourceBranch=${newerGitMetadata.commitInfo?.sha}"
-    } else {
-      null
-    }
-  }
-
-  // Calling igor to fetch all base urls by SCM type, and returning the right one based on current commit link
-  private fun getScmBaseLink(commitLink: String): String? {
-    val scmInfo = runBlocking {
-      scmInfo.getScmInfo()
-    }
-    //TODO[gyardeni]: replace this parsing when rocket will add scm type to gitMetadata
-    when {
-      "stash" in commitLink ->
-        return scmInfo["stash"]
-      else ->
-        throw UnsupportedScmType(message = "Stash is currently the only supported SCM type")
-    }
-  }
 }

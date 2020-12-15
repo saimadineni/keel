@@ -4,10 +4,9 @@ import com.netflix.spinnaker.keel.api.DeliveryConfig
 import com.netflix.spinnaker.keel.api.artifacts.ArtifactMetadata
 import com.netflix.spinnaker.keel.api.artifacts.ArtifactStatus
 import com.netflix.spinnaker.keel.api.artifacts.ArtifactType
+import com.netflix.spinnaker.keel.api.artifacts.DEFAULT_MAX_ARTIFACT_VERSIONS
 import com.netflix.spinnaker.keel.api.artifacts.DeliveryArtifact
 import com.netflix.spinnaker.keel.api.artifacts.PublishedArtifact
-import com.netflix.spinnaker.keel.api.artifacts.DEFAULT_MAX_ARTIFACT_VERSIONS
-import com.netflix.spinnaker.keel.api.artifacts.GitMetadata
 import com.netflix.spinnaker.keel.core.api.ArtifactSummaryInEnvironment
 import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactPin
 import com.netflix.spinnaker.keel.core.api.EnvironmentArtifactVeto
@@ -33,7 +32,7 @@ interface ArtifactRepository : PeriodicallyCheckedRepository<DeliveryArtifact> {
 
   fun isRegistered(name: String, type: ArtifactType): Boolean
 
-  fun getAll(type: ArtifactType? = null): List<DeliveryArtifact>
+  fun getAll(type: ArtifactType? = null, name: String? = null): List<DeliveryArtifact>
 
   /**
    * Deletes an artifact from a delivery config.
@@ -224,14 +223,20 @@ interface ArtifactRepository : PeriodicallyCheckedRepository<DeliveryArtifact> {
   fun deletePin(deliveryConfig: DeliveryConfig, targetEnvironment: String, reference: String)
 
   /**
-   * Return the git metadata for the last deployed version of the specified artifact that matches the promotion status
+   * Return a specific artifact version if is pinned, from [targetEnvironment], by [reference], if exists.
    */
-  fun getGitMetadataByPromotionStatus(
+  fun getPinnedVersion(deliveryConfig: DeliveryConfig, targetEnvironment: String, reference: String): String?
+
+  /**
+   * Return the published artifact for the last deployed version that matches the promotion status
+   */
+  fun getArtifactVersionByPromotionStatus(
     deliveryConfig: DeliveryConfig,
     environmentName: String,
     artifact: DeliveryArtifact,
-    promotionStatus: String
-  ): GitMetadata?
+    promotionStatus: PromotionStatus,
+    version: String? = null
+  ): PublishedArtifact?
 
   /**
    * Given information about a delivery config, environment, artifact and version, returns a summary that can be

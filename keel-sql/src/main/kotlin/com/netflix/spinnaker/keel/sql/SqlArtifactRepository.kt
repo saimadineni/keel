@@ -2,14 +2,12 @@ package com.netflix.spinnaker.keel.sql
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.convertValue
-import com.fasterxml.jackson.module.kotlin.readValue
 import com.netflix.spinnaker.keel.api.DeliveryConfig
 import com.netflix.spinnaker.keel.api.Environment
 import com.netflix.spinnaker.keel.api.artifacts.ArtifactMetadata
 import com.netflix.spinnaker.keel.api.artifacts.ArtifactStatus
 import com.netflix.spinnaker.keel.api.artifacts.ArtifactType
 import com.netflix.spinnaker.keel.api.artifacts.DeliveryArtifact
-import com.netflix.spinnaker.keel.api.artifacts.GitMetadata
 import com.netflix.spinnaker.keel.api.artifacts.PublishedArtifact
 import com.netflix.spinnaker.keel.api.plugins.ArtifactSupplier
 import com.netflix.spinnaker.keel.api.plugins.supporting
@@ -53,13 +51,13 @@ import org.jooq.SelectConditionStep
 import org.jooq.impl.DSL
 import org.jooq.impl.DSL.select
 import org.jooq.impl.DSL.selectOne
+import org.jooq.kotlin.*
 import org.jooq.util.mysql.MySQLDSL
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant.EPOCH
-import java.time.ZoneOffset.UTC
 import javax.xml.bind.DatatypeConverter
 
 class SqlArtifactRepository(
@@ -102,9 +100,9 @@ class SqlArtifactRepository(
         .execute()
       jooq.insertInto(ARTIFACT_LAST_CHECKED)
         .set(ARTIFACT_LAST_CHECKED.ARTIFACT_UID, id)
-        .set(ARTIFACT_LAST_CHECKED.AT, EPOCH.plusSeconds(1).toTimestamp())
+        .set(ARTIFACT_LAST_CHECKED.AT, EPOCH.plusSeconds(1))
         .onDuplicateKeyUpdate()
-        .set(ARTIFACT_LAST_CHECKED.AT, EPOCH.plusSeconds(1).toTimestamp())
+        .set(ARTIFACT_LAST_CHECKED.AT, EPOCH.plusSeconds(1))
         .execute()
     }
   }
@@ -187,16 +185,17 @@ class SqlArtifactRepository(
         .from(DELIVERY_ARTIFACT)
         .where(DELIVERY_ARTIFACT.NAME.eq(name))
         .and(DELIVERY_ARTIFACT.TYPE.eq(type))
-        .fetchOne()
+        .fetchSingle()
         .value1()
     } > 0
 
-  override fun getAll(type: ArtifactType?): List<DeliveryArtifact> =
+  override fun getAll(type: ArtifactType?, name: String?): List<DeliveryArtifact> =
     sqlRetry.withRetry(READ) {
       jooq
         .select(DELIVERY_ARTIFACT.NAME, DELIVERY_ARTIFACT.TYPE, DELIVERY_ARTIFACT.DETAILS, DELIVERY_ARTIFACT.REFERENCE, DELIVERY_ARTIFACT.DELIVERY_CONFIG_NAME)
         .from(DELIVERY_ARTIFACT)
         .apply { if (type != null) where(DELIVERY_ARTIFACT.TYPE.eq(type.toString())) }
+        .apply { if (name != null) where(DELIVERY_ARTIFACT.NAME.eq(name)) }
         .fetch { (name, storedType, details, reference, configName) ->
           mapToArtifact(artifactSuppliers.supporting(storedType), name, storedType.toLowerCase(), details, reference, configName)
         }
@@ -236,10 +235,10 @@ class SqlArtifactRepository(
           .set(ARTIFACT_VERSIONS.NAME, name)
           .set(ARTIFACT_VERSIONS.TYPE, type)
           .set(ARTIFACT_VERSIONS.VERSION, version)
-          .set(ARTIFACT_VERSIONS.RELEASE_STATUS, status?.toString())
-          .set(ARTIFACT_VERSIONS.CREATED_AT, createdAt?.toTimestamp())
-          .set(ARTIFACT_VERSIONS.GIT_METADATA, gitMetadata?.let { objectMapper.writeValueAsString(it) })
-          .set(ARTIFACT_VERSIONS.BUILD_METADATA, buildMetadata?.let { objectMapper.writeValueAsString(it) })
+          .set(ARTIFACT_VERSIONS.RELEASE_STATUS, status)
+          .set(ARTIFACT_VERSIONS.CREATED_AT, createdAt)
+          .set(ARTIFACT_VERSIONS.GIT_METADATA, gitMetadata)
+          .set(ARTIFACT_VERSIONS.BUILD_METADATA, buildMetadata)
           .onDuplicateKeyIgnore()
           .execute()
       } == 1
@@ -247,7 +246,7 @@ class SqlArtifactRepository(
   }
 
   override fun getArtifactVersion(artifact: DeliveryArtifact, version: String, status: ArtifactStatus?): PublishedArtifact? {
-   return sqlRetry.withRetry(READ) {
+    return sqlRetry.withRetry(READ) {
       jooq
         .select(
           ARTIFACT_VERSIONS.NAME,
@@ -262,16 +261,16 @@ class SqlArtifactRepository(
         .where(ARTIFACT_VERSIONS.NAME.eq(artifact.name))
         .and(ARTIFACT_VERSIONS.TYPE.eq(artifact.type))
         .and(ARTIFACT_VERSIONS.VERSION.eq(version))
-        .apply { if (status != null) and(ARTIFACT_VERSIONS.RELEASE_STATUS.eq(status.toString())) }
+        .apply { if (status != null) and(ARTIFACT_VERSIONS.RELEASE_STATUS.eq(status)) }
         .fetchOne { (name, type, version, status, createdAt, gitMetadata, buildMetadata) ->
           PublishedArtifact(
             name = name,
             type = type,
             version = version,
-            status = status?.let { ArtifactStatus.valueOf(it) },
-            createdAt = createdAt?.toInstant(UTC),
-            gitMetadata = gitMetadata?.let { objectMapper.readValue(it) },
-            buildMetadata = buildMetadata?.let { objectMapper.readValue(it) },
+            status = status,
+            createdAt = createdAt,
+            gitMetadata = gitMetadata,
+            buildMetadata = buildMetadata,
           )
         }
     }
@@ -285,13 +284,13 @@ class SqlArtifactRepository(
 
       sqlRetry.withRetry(WRITE) {
         jooq.update(ARTIFACT_VERSIONS)
-          .set(ARTIFACT_VERSIONS.BUILD_METADATA, objectMapper.writeValueAsString(artifactMetadata.buildMetadata))
-          .set(ARTIFACT_VERSIONS.GIT_METADATA, objectMapper.writeValueAsString(artifactMetadata.gitMetadata))
+          .set(ARTIFACT_VERSIONS.BUILD_METADATA, artifactMetadata.buildMetadata)
+          .set(ARTIFACT_VERSIONS.GIT_METADATA, artifactMetadata.gitMetadata)
           .where(
             ARTIFACT_VERSIONS.NAME.eq(name),
             ARTIFACT_VERSIONS.TYPE.eq(type),
             ARTIFACT_VERSIONS.VERSION.eq(version).or(ARTIFACT_VERSIONS.VERSION.eq("$name-$version")))
-          .apply { if (status != null) and(ARTIFACT_VERSIONS.RELEASE_STATUS.eq(status.toString())) }
+          .apply { if (status != null) and(ARTIFACT_VERSIONS.RELEASE_STATUS.eq(status)) }
           .execute()
       }
     }
@@ -307,8 +306,6 @@ class SqlArtifactRepository(
           .and(ARTIFACT_VERSIONS.TYPE.eq(artifact.type))
           .and(ARTIFACT_VERSIONS.VERSION.eq(version))
           .fetchOne(ARTIFACT_VERSIONS.RELEASE_STATUS)
-      }?.let {
-        ArtifactStatus.valueOf(it)
       }
     } else {
       throw NoSuchArtifactException(artifact)
@@ -354,7 +351,7 @@ class SqlArtifactRepository(
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(envUid))
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifactId))
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.APPROVED_AT.isNotNull)
-        .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.ne(VETOED.name))
+        .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.ne(VETOED))
         .orderBy(ENVIRONMENT_ARTIFACT_VERSIONS.APPROVED_AT.desc())
         .limit(20)
         .fetchArtifactVersions()
@@ -375,8 +372,8 @@ class SqlArtifactRepository(
         .set(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID, deliveryConfig.getUidFor(environment))
         .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID, artifact.uid)
         .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION, version)
-        .set(ENVIRONMENT_ARTIFACT_VERSIONS.APPROVED_AT, clock.timestamp())
-        .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, APPROVED.name)
+        .set(ENVIRONMENT_ARTIFACT_VERSIONS.APPROVED_AT, clock.instant())
+        .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, APPROVED)
         .onDuplicateKeyIgnore()
         .execute()
     } > 0
@@ -396,7 +393,7 @@ class SqlArtifactRepository(
           ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(deliveryConfig.getUidFor(environment))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION.eq(version))
-            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.ne(VETOED.name))
+            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.ne(VETOED))
         )
     }
   }
@@ -416,7 +413,7 @@ class SqlArtifactRepository(
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION.eq(version))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT.isNotNull)
-            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.`in`(listOf(CURRENT.name, PREVIOUS.name)))
+            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.`in`(listOf(CURRENT, PREVIOUS)))
         )
     }
   }
@@ -436,7 +433,7 @@ class SqlArtifactRepository(
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION.eq(version))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT.isNotNull)
-            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(CURRENT.name))
+            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(CURRENT))
         )
     }
   }
@@ -457,18 +454,18 @@ class SqlArtifactRepository(
           .from(ENVIRONMENT_ARTIFACT_VERSIONS)
           .where(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(environmentUid))
           .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
-          .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(DEPLOYING.name))
+          .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(DEPLOYING))
           .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION.ne(version))
           .fetch(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION)
         if (stuckVersions.isNotEmpty()) {
           log.error("Stuck deploying versions ${stuckVersions.joinToString()} for artifact '${artifact.reference}' in delivery config ${deliveryConfig.name} found when deploying version $version")
           txn.update(ENVIRONMENT_ARTIFACT_VERSIONS)
-            .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, SKIPPED.name)
+            .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, SKIPPED)
             .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_BY, version)
-            .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, now.toTimestamp())
+            .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, now)
             .where(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(environmentUid))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
-            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(DEPLOYING.name))
+            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(DEPLOYING))
             .execute()
         }
 
@@ -477,9 +474,9 @@ class SqlArtifactRepository(
           .set(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID, environmentUid)
           .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID, artifact.uid)
           .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION, version)
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, DEPLOYING.name)
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, DEPLOYING)
           .onDuplicateKeyUpdate()
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, DEPLOYING.name)
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, DEPLOYING)
           .execute()
       }
     }
@@ -505,11 +502,11 @@ class SqlArtifactRepository(
           .set(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID, environmentUid)
           .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID, artifact.uid)
           .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION, version)
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT, clock.timestamp())
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, CURRENT.name)
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT, clock.instant())
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, CURRENT)
           .onDuplicateKeyUpdate()
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT, clock.timestamp())
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, CURRENT.name)
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT, clock.instant())
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, CURRENT)
           .execute()
 
         log.debug("markAsSuccessfullyDeployedTo: # of records marked CURRENT: $currentUpdates. name: ${artifact.name}. version: $version. env: $targetEnvironment")
@@ -517,12 +514,12 @@ class SqlArtifactRepository(
         // update old "CURRENT" to "PREVIOUS
         val previousUpdates = txn
           .update(ENVIRONMENT_ARTIFACT_VERSIONS)
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, PREVIOUS.name)
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, PREVIOUS)
           .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_BY, version)
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, clock.timestamp())
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, clock.instant())
           .where(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(environmentUid))
           .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
-          .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(CURRENT.name))
+          .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(CURRENT))
           .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION.ne(version))
           .execute()
 
@@ -530,18 +527,18 @@ class SqlArtifactRepository(
         // update any past artifacts that were "APPROVED" to be "SKIPPED"
         // because the new version takes precedence
         val approved = txn.select(
-            ARTIFACT_VERSIONS.NAME,
-            ARTIFACT_VERSIONS.TYPE,
-            ARTIFACT_VERSIONS.VERSION,
-            ARTIFACT_VERSIONS.RELEASE_STATUS,
-            ARTIFACT_VERSIONS.CREATED_AT,
-            ARTIFACT_VERSIONS.GIT_METADATA,
-            ARTIFACT_VERSIONS.BUILD_METADATA
-          )
+          ARTIFACT_VERSIONS.NAME,
+          ARTIFACT_VERSIONS.TYPE,
+          ARTIFACT_VERSIONS.VERSION,
+          ARTIFACT_VERSIONS.RELEASE_STATUS,
+          ARTIFACT_VERSIONS.CREATED_AT,
+          ARTIFACT_VERSIONS.GIT_METADATA,
+          ARTIFACT_VERSIONS.BUILD_METADATA
+        )
           .from(ENVIRONMENT_ARTIFACT_VERSIONS, DELIVERY_ARTIFACT, ARTIFACT_VERSIONS)
           .where(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(environmentUid))
           .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
-          .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(APPROVED.name))
+          .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(APPROVED))
           .and(DELIVERY_ARTIFACT.UID.eq(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID))
           .and(ARTIFACT_VERSIONS.NAME.eq(DELIVERY_ARTIFACT.NAME))
           .and(ARTIFACT_VERSIONS.TYPE.eq(DELIVERY_ARTIFACT.TYPE))
@@ -556,15 +553,15 @@ class SqlArtifactRepository(
 
         log.debug("markAsSuccessfullyDeployedTo: # of approvedButOld: ${approvedButOld.size}. ${artifact.name}. version: $version. env: $targetEnvironment")
 
-        if(approvedButOld.isNotEmpty()) {
+        if (approvedButOld.isNotEmpty()) {
           val skippedUpdates = txn
             .update(ENVIRONMENT_ARTIFACT_VERSIONS)
-            .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, SKIPPED.name)
+            .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, SKIPPED)
             .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_BY, version)
-            .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, clock.timestamp())
+            .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, clock.instant())
             .where(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(environmentUid))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
-            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(APPROVED.name))
+            .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(APPROVED))
             .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION.`in`(*approvedButOld))
             .execute()
 
@@ -592,7 +589,7 @@ class SqlArtifactRepository(
       .on(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(ENVIRONMENT.UID))
       .where(
         ENVIRONMENT.DELIVERY_CONFIG_UID.eq(deliveryConfig.uid),
-        ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(VETOED.name)
+        ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(VETOED)
       )
       .fetch { (envName, artifactId, version) ->
         if (artifactsById.containsKey(artifactId)) {
@@ -736,11 +733,11 @@ class SqlArtifactRepository(
       .set(ENVIRONMENT_ARTIFACT_VETO.ENVIRONMENT_UID, envUid)
       .set(ENVIRONMENT_ARTIFACT_VETO.ARTIFACT_UID, artUid)
       .set(ENVIRONMENT_ARTIFACT_VETO.ARTIFACT_VERSION, veto.version)
-      .set(ENVIRONMENT_ARTIFACT_VETO.VETOED_AT, clock.timestamp())
+      .set(ENVIRONMENT_ARTIFACT_VETO.VETOED_AT, clock.instant())
       .set(ENVIRONMENT_ARTIFACT_VETO.VETOED_BY, veto.vetoedBy)
       .set(ENVIRONMENT_ARTIFACT_VETO.COMMENT, veto.comment)
       .onDuplicateKeyUpdate()
-      .set(ENVIRONMENT_ARTIFACT_VETO.VETOED_AT, clock.timestamp())
+      .set(ENVIRONMENT_ARTIFACT_VETO.VETOED_AT, clock.instant())
       .set(ENVIRONMENT_ARTIFACT_VETO.VETOED_BY, veto.vetoedBy)
       .set(ENVIRONMENT_ARTIFACT_VETO.COMMENT, veto.comment)
       .execute()
@@ -756,10 +753,10 @@ class SqlArtifactRepository(
       .set(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID, envUid)
       .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID, artUid)
       .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION, veto.version)
-      .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, VETOED.name)
+      .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, VETOED)
       .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_REFERENCE, prior ?: veto.version)
       .onDuplicateKeyUpdate()
-      .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, VETOED.name)
+      .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, VETOED)
       .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_REFERENCE, prior ?: veto.version)
       .execute()
   }
@@ -854,7 +851,7 @@ class SqlArtifactRepository(
         val txn = DSL.using(config)
 
         txn.update(ENVIRONMENT_ARTIFACT_VERSIONS)
-          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, APPROVED.name)
+          .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, APPROVED)
           .setNull(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_REFERENCE)
           .where(
             ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(envId),
@@ -898,13 +895,13 @@ class SqlArtifactRepository(
         .set(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID, environmentUid)
         .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID, artifact.uid)
         .set(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION, version)
-        .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, SKIPPED.name)
+        .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, SKIPPED)
         .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_BY, supersededByVersion)
-        .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, clock.timestamp())
+        .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, clock.instant())
         .onDuplicateKeyUpdate()
-        .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, SKIPPED.name)
+        .set(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS, SKIPPED)
         .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_BY, supersededByVersion)
-        .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, clock.timestamp())
+        .set(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_AT, clock.instant())
         .execute()
     }
   }
@@ -945,7 +942,7 @@ class SqlArtifactRepository(
           .and(ARTIFACT_VERSIONS.TYPE.eq(artifact.type))
           .apply {
             if (artifact.statuses.isNotEmpty()) {
-              and(ARTIFACT_VERSIONS.RELEASE_STATUS.`in`(*artifact.statuses.map { it.toString() }.toTypedArray()))
+              and(ARTIFACT_VERSIONS.RELEASE_STATUS.`in`(*artifact.statuses.toTypedArray()))
             }
           }
 
@@ -958,7 +955,7 @@ class SqlArtifactRepository(
             ARTIFACT_VERSIONS.CREATED_AT,
             ARTIFACT_VERSIONS.GIT_METADATA,
             ARTIFACT_VERSIONS.BUILD_METADATA,
-            DSL.`val`(PENDING.name)
+            DSL.`val`(PENDING)
           )
           .from(
             ARTIFACT_VERSIONS,
@@ -975,7 +972,7 @@ class SqlArtifactRepository(
           .and(ENVIRONMENT.NAME.eq(environment.name))
           .and(ARTIFACT_VERSIONS.NAME.eq(artifact.name))
           .and(ARTIFACT_VERSIONS.TYPE.eq(artifact.type))
-          .apply { if (artifact.statuses.isNotEmpty()) and(ARTIFACT_VERSIONS.RELEASE_STATUS.`in`(*artifact.statuses.map { it.toString() }.toTypedArray())) }
+          .apply { if (artifact.statuses.isNotEmpty()) and(ARTIFACT_VERSIONS.RELEASE_STATUS.`in`(*artifact.statuses.toTypedArray())) }
           .andNotExists(
             selectOne()
               .from(ENVIRONMENT_ARTIFACT_VERSIONS)
@@ -992,11 +989,11 @@ class SqlArtifactRepository(
                 name = name,
                 type = type,
                 version = version,
-                status = status?.let { ArtifactStatus.valueOf(it) },
-                createdAt = createdAt?.toInstant(UTC),
-                gitMetadata = gitMetadata?.let { objectMapper.readValue(it) },
-                buildMetadata = buildMetadata?.let { objectMapper.readValue(it) },
-              ) to PromotionStatus.valueOf(promotionStatus)
+                status = status,
+                createdAt = createdAt,
+                gitMetadata = gitMetadata,
+                buildMetadata = buildMetadata,
+              ) to promotionStatus
             }
         }
           .filter { (artifactVersion, _) ->
@@ -1015,7 +1012,7 @@ class SqlArtifactRepository(
           .toSet()
 
         val versions = unionedVersions
-          .sortedWith(compareBy( artifact.sortingStrategy.comparator) { (artifactVersion, _) -> artifactVersion })
+          .sortedWith(compareBy(artifact.sortingStrategy.comparator) { (artifactVersion, _) -> artifactVersion })
           .groupBy(
             { (_, promotionStatus) ->
               promotionStatus
@@ -1059,12 +1056,12 @@ class SqlArtifactRepository(
           .set(ENVIRONMENT_ARTIFACT_PIN.ENVIRONMENT_UID, deliveryConfig.getUidFor(environment))
           .set(ENVIRONMENT_ARTIFACT_PIN.ARTIFACT_UID, artifact.uid)
           .set(ENVIRONMENT_ARTIFACT_PIN.ARTIFACT_VERSION, version)
-          .set(ENVIRONMENT_ARTIFACT_PIN.PINNED_AT, clock.timestamp())
+          .set(ENVIRONMENT_ARTIFACT_PIN.PINNED_AT, clock.instant())
           .set(ENVIRONMENT_ARTIFACT_PIN.PINNED_BY, pinnedBy ?: "anonymous")
           .set(ENVIRONMENT_ARTIFACT_PIN.COMMENT, comment)
           .onDuplicateKeyUpdate()
           .set(ENVIRONMENT_ARTIFACT_PIN.ARTIFACT_VERSION, version)
-          .set(ENVIRONMENT_ARTIFACT_PIN.PINNED_AT, clock.timestamp())
+          .set(ENVIRONMENT_ARTIFACT_PIN.PINNED_AT, clock.instant())
           .set(ENVIRONMENT_ARTIFACT_PIN.PINNED_BY, pinnedBy ?: "anonymous")
           .set(ENVIRONMENT_ARTIFACT_PIN.COMMENT, MySQLDSL.values(ENVIRONMENT_ARTIFACT_PIN.COMMENT))
           .execute()
@@ -1106,7 +1103,7 @@ class SqlArtifactRepository(
               deliveryConfig.name
             ),
             version = version,
-            pinnedAt = pinnedAt.toInstant(UTC),
+            pinnedAt = pinnedAt,
             pinnedBy = pinnedBy,
             comment = comment
           )
@@ -1127,6 +1124,29 @@ class SqlArtifactRepository(
         .fetch { (envUid, artUid) ->
           deletePin(envUid, artUid)
         }
+    }
+  }
+
+  override fun getPinnedVersion(
+    deliveryConfig: DeliveryConfig,
+    targetEnvironment: String,
+    reference: String
+  ): String? {
+    return sqlRetry.withRetry(READ) {
+      jooq.select(ENVIRONMENT_ARTIFACT_PIN.ARTIFACT_VERSION)
+        .from(DELIVERY_ARTIFACT)
+        .innerJoin(ENVIRONMENT_ARTIFACT_PIN)
+        .on(ENVIRONMENT_ARTIFACT_PIN.ARTIFACT_UID.eq(DELIVERY_ARTIFACT.UID))
+        .innerJoin(ENVIRONMENT)
+        .on(ENVIRONMENT_ARTIFACT_PIN.ENVIRONMENT_UID.eq(ENVIRONMENT.UID))
+        .where(
+          DELIVERY_ARTIFACT.DELIVERY_CONFIG_NAME.eq(deliveryConfig.name),
+          DELIVERY_ARTIFACT.REFERENCE.eq(reference),
+          ENVIRONMENT.NAME.eq(targetEnvironment),
+          ENVIRONMENT.DELIVERY_CONFIG_UID.eq(deliveryConfig.uid)
+        )
+        .fetch(ENVIRONMENT_ARTIFACT_PIN.ARTIFACT_VERSION)
+        .firstOrNull()
     }
   }
 
@@ -1154,38 +1174,31 @@ class SqlArtifactRepository(
     }
   }
 
-  override fun getGitMetadataByPromotionStatus(
+  override fun getArtifactVersionByPromotionStatus(
     deliveryConfig: DeliveryConfig,
     environmentName: String,
     artifact: DeliveryArtifact,
-    promotionStatus: String
-  ): GitMetadata? {
+    promotionStatus: PromotionStatus,
+    version: String?
+  ): PublishedArtifact? {
     //only CURRENT and PREVIOUS are supported, as they can be sorted by deploy_at
-    require(promotionStatus in listOf(CURRENT.name, PREVIOUS.name)) { "Invalid promotion status used to query" }
+    require(promotionStatus in listOf(CURRENT, PREVIOUS)) { "Invalid promotion status used to query" }
 
     return sqlRetry.withRetry(READ) {
-      val version = jooq
+      val fetchedVersion = jooq
         .select(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION)
         .from(ENVIRONMENT_ARTIFACT_VERSIONS)
         .where(ENVIRONMENT_ARTIFACT_VERSIONS.ENVIRONMENT_UID.eq(deliveryConfig.getUidFor(environmentName)))
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.eq(promotionStatus))
+        //special case for pinning
+        .apply { if (version != null) and(ENVIRONMENT_ARTIFACT_VERSIONS.REPLACED_BY.eq(version)) }
         .orderBy(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT.desc())
         .fetch(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION)
         .firstOrNull()
 
-      if (version != null) {
-        jooq
-          .select(
-            ARTIFACT_VERSIONS.GIT_METADATA
-          )
-          .from(ARTIFACT_VERSIONS)
-          .where(ARTIFACT_VERSIONS.NAME.eq(artifact.name))
-          .and(ARTIFACT_VERSIONS.TYPE.eq(artifact.type))
-          .and(ARTIFACT_VERSIONS.VERSION.eq(version))
-          .fetchOne { (gitMetadata) ->
-            gitMetadata?.let { objectMapper.readValue(it) }
-          }
+      if (fetchedVersion != null) {
+        getArtifactVersion(artifact, fetchedVersion)
       } else {
         null
       }
@@ -1225,7 +1238,7 @@ class SqlArtifactRepository(
             .and(ENVIRONMENT_ARTIFACT_VETO.ARTIFACT_UID.eq(artifact.uid))
             .and(ENVIRONMENT_ARTIFACT_VETO.ARTIFACT_VERSION.eq(version))
             .fetchOne { (vetoedAt, vetoedBy, comment) ->
-              ActionMetadata(at = vetoedAt.toInstant(UTC), by = vetoedBy, comment = comment)
+              ActionMetadata(at = vetoedAt, by = vetoedBy, comment = comment)
             }
           var pinned: ActionMetadata? = null
           if (vetoed == null) {
@@ -1237,16 +1250,16 @@ class SqlArtifactRepository(
               .and(ENVIRONMENT_ARTIFACT_PIN.ARTIFACT_UID.eq(artifact.uid))
               .and(ENVIRONMENT_ARTIFACT_PIN.ARTIFACT_VERSION.eq(version))
               .fetchOne { (pinnedBy, pinnedAt, comment) ->
-                ActionMetadata(at = pinnedAt.toInstant(UTC), by = pinnedBy, comment = comment)
+                ActionMetadata(at = pinnedAt, by = pinnedBy, comment = comment)
               }
           }
 
           ArtifactSummaryInEnvironment(
             environment = environmentName,
             version = version,
-            state = promotionStatus.toLowerCase(),
-            deployedAt = deployedAt?.toInstant(UTC),
-            replacedAt = replacedAt?.toInstant(UTC),
+            state = promotionStatus.name.toLowerCase(),
+            deployedAt = deployedAt,
+            replacedAt = replacedAt,
             replacedBy = replacedBy,
             pinned = pinned,
             vetoed = vetoed
@@ -1269,13 +1282,12 @@ class SqlArtifactRepository(
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifact.uid))
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION.eq(version))
         .fetchOne(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS)
-        ?.let { PromotionStatus.valueOf(it) }
     }
   }
 
   override fun itemsDueForCheck(minTimeSinceLastCheck: Duration, limit: Int): Collection<DeliveryArtifact> {
     val now = clock.instant()
-    val cutoff = now.minus(minTimeSinceLastCheck).toTimestamp()
+    val cutoff = now.minus(minTimeSinceLastCheck)
     return sqlRetry.withRetry(WRITE) {
       jooq.inTransaction {
         select(DELIVERY_ARTIFACT.UID, DELIVERY_ARTIFACT.NAME, DELIVERY_ARTIFACT.TYPE, DELIVERY_ARTIFACT.DETAILS, DELIVERY_ARTIFACT.REFERENCE, DELIVERY_ARTIFACT.DELIVERY_CONFIG_NAME)
@@ -1290,9 +1302,9 @@ class SqlArtifactRepository(
             it.forEach { (uid, _, _, _, _, _) ->
               insertInto(ARTIFACT_LAST_CHECKED)
                 .set(ARTIFACT_LAST_CHECKED.ARTIFACT_UID, uid)
-                .set(ARTIFACT_LAST_CHECKED.AT, now.toTimestamp())
+                .set(ARTIFACT_LAST_CHECKED.AT, now)
                 .onDuplicateKeyUpdate()
-                .set(ARTIFACT_LAST_CHECKED.AT, now.toTimestamp())
+                .set(ARTIFACT_LAST_CHECKED.AT, now)
                 .execute()
             }
           }
@@ -1316,7 +1328,7 @@ class SqlArtifactRepository(
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_UID.eq(artifactId))
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION.ne(currentVersion))
         .and(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT.isNotNull)
-        .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.ne(VETOED.name))
+        .and(ENVIRONMENT_ARTIFACT_VERSIONS.PROMOTION_STATUS.ne(VETOED))
         .orderBy(ENVIRONMENT_ARTIFACT_VERSIONS.DEPLOYED_AT.desc())
         .limit(1)
         .fetchOne(ENVIRONMENT_ARTIFACT_VERSIONS.ARTIFACT_VERSION)

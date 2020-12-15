@@ -14,14 +14,13 @@ import com.netflix.spinnaker.keel.core.api.SubmittedDeliveryConfig
 import com.netflix.spinnaker.keel.core.api.SubmittedEnvironment
 import com.netflix.spinnaker.keel.core.api.SubmittedResource
 import com.netflix.spinnaker.keel.core.api.randomUID
+import com.netflix.spinnaker.keel.igor.DeliveryConfigImporter
 import com.netflix.spinnaker.keel.persistence.KeelRepository
 import com.netflix.spinnaker.keel.persistence.NoSuchDeliveryConfigName
 import com.netflix.spinnaker.keel.rest.AuthorizationSupport.Action.READ
 import com.netflix.spinnaker.keel.rest.AuthorizationSupport.Action.WRITE
 import com.netflix.spinnaker.keel.rest.AuthorizationSupport.TargetEntity.APPLICATION
 import com.netflix.spinnaker.keel.rest.AuthorizationSupport.TargetEntity.DELIVERY_CONFIG
-import com.netflix.spinnaker.keel.services.DeliveryConfigImporter
-import com.netflix.spinnaker.keel.spring.test.DisableSpringScheduling
 import com.netflix.spinnaker.keel.spring.test.MockEurekaConfiguration
 import com.netflix.spinnaker.keel.test.DummyResourceSpec
 import com.netflix.spinnaker.keel.test.TEST_API_V1
@@ -57,11 +56,12 @@ import strikt.jackson.isMissing
   webEnvironment = MOCK
 )
 @AutoConfigureMockMvc
-@DisableSpringScheduling
-internal class DeliveryConfigControllerTests : JUnit5Minutests {
-
-  @Autowired
-  lateinit var mvc: MockMvc
+internal class DeliveryConfigControllerTests
+@Autowired constructor(
+  val mvc: MockMvc,
+  val jsonMapper: ObjectMapper,
+  val yamlMapper: YAMLMapper
+) : JUnit5Minutests {
 
   @MockkBean
   lateinit var repository: KeelRepository
@@ -71,12 +71,6 @@ internal class DeliveryConfigControllerTests : JUnit5Minutests {
 
   @MockkBean
   lateinit var importer: DeliveryConfigImporter
-
-  @Autowired
-  lateinit var jsonMapper: ObjectMapper
-
-  @Autowired
-  lateinit var yamlMapper: YAMLMapper
 
   private val deliveryConfig = SubmittedDeliveryConfig(
     name = "keel-manifest",
@@ -370,9 +364,10 @@ internal class DeliveryConfigControllerTests : JUnit5Minutests {
         }
 
         test("the request is successful and the manifest persisted") {
-          val request = post("/delivery-configs/import?repoType=stash&projectKey=proj&repoSlug=repo&manifestPath=spinnaker.yml")
-            .accept(APPLICATION_YAML)
-            .contentType(APPLICATION_YAML)
+          val request =
+            post("/delivery-configs/import?repoType=stash&projectKey=proj&repoSlug=repo&manifestPath=spinnaker.yml")
+              .accept(APPLICATION_YAML)
+              .contentType(APPLICATION_YAML)
 
           val response = mvc.perform(request)
           response.andExpect(status().isOk)
@@ -397,9 +392,10 @@ internal class DeliveryConfigControllerTests : JUnit5Minutests {
         }
 
         test("the error from the dowstream service is returned") {
-          val request = post("/delivery-configs/import?repoType=stash&projectKey=proj&repoSlug=repo&manifestPath=spinnaker.yml")
-            .accept(APPLICATION_YAML)
-            .contentType(APPLICATION_YAML)
+          val request =
+            post("/delivery-configs/import?repoType=stash&projectKey=proj&repoSlug=repo&manifestPath=spinnaker.yml")
+              .accept(APPLICATION_YAML)
+              .contentType(APPLICATION_YAML)
 
           val response = mvc.perform(request)
           response.andExpect(status().isNotFound)
@@ -511,9 +507,10 @@ internal class DeliveryConfigControllerTests : JUnit5Minutests {
             authorizationSupport.allowServiceAccountAccess()
           }
           test("request is forbidden") {
-            val request = post("/delivery-configs/import?repoType=stash&projectKey=proj&repoSlug=repo&manifestPath=spinnaker.yml")
-              .accept(MediaType.APPLICATION_JSON_VALUE)
-              .header("X-SPINNAKER-USER", "keel@keel.io")
+            val request =
+              post("/delivery-configs/import?repoType=stash&projectKey=proj&repoSlug=repo&manifestPath=spinnaker.yml")
+                .accept(MediaType.APPLICATION_JSON_VALUE)
+                .header("X-SPINNAKER-USER", "keel@keel.io")
 
             mvc.perform(request).andExpect(status().isForbidden)
           }
@@ -524,9 +521,10 @@ internal class DeliveryConfigControllerTests : JUnit5Minutests {
             authorizationSupport.denyServiceAccountAccess()
           }
           test("request is forbidden") {
-            val request = post("/delivery-configs/import?repoType=stash&projectKey=proj&repoSlug=repo&manifestPath=spinnaker.yml")
-              .accept(MediaType.APPLICATION_JSON_VALUE)
-              .header("X-SPINNAKER-USER", "keel@keel.io")
+            val request =
+              post("/delivery-configs/import?repoType=stash&projectKey=proj&repoSlug=repo&manifestPath=spinnaker.yml")
+                .accept(MediaType.APPLICATION_JSON_VALUE)
+                .header("X-SPINNAKER-USER", "keel@keel.io")
 
             mvc.perform(request).andExpect(status().isForbidden)
           }

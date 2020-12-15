@@ -13,7 +13,6 @@ import com.netflix.spinnaker.keel.persistence.DeliveryConfigRepository
 import com.netflix.spinnaker.keel.persistence.KeelRepository
 import com.netflix.spinnaker.keel.persistence.NoSuchDeliveryConfigName
 import com.netflix.spinnaker.keel.persistence.ResourceRepository
-import com.netflix.spinnaker.keel.spring.test.DisableSpringScheduling
 import com.netflix.spinnaker.keel.test.DummyResourceHandlerV1
 import com.netflix.spinnaker.keel.test.DummyResourceSpec
 import com.netflix.spinnaker.kork.sql.test.SqlTestUtil.cleanupDb
@@ -41,17 +40,13 @@ import strikt.assertions.isFalse
 @ExtendWith(SpringExtension::class)
 @SpringBootTest(
   classes = [KeelApplication::class, TestConfiguration::class],
-  webEnvironment = MOCK,
-  properties = [
-    "gate.baseUrl=http://spinnaker",
-    "sql.enabled=true",
-    "sql.connection-pools.default.jdbc-url=jdbc:tc:mysql:5.7.22://somehostname:someport/databasename",
-    "sql.migration.jdbc-url=jdbc:tc:mysql:5.7.22://somehostname:someport/databasename",
-    "spring.datasource.driver-class-name=org.testcontainers.jdbc.ContainerDatabaseDriver"
-  ]
+  webEnvironment = MOCK
 )
-@DisableSpringScheduling
-internal class DeliveryConfigTransactionTests : JUnit5Minutests {
+internal class DeliveryConfigTransactionTests
+@Autowired constructor(
+  val repository: KeelRepository,
+  val jooq: DSLContext
+) : JUnit5Minutests {
 
   @SpykBean
   lateinit var artifactRepository: ArtifactRepository
@@ -61,12 +56,6 @@ internal class DeliveryConfigTransactionTests : JUnit5Minutests {
 
   @SpykBean
   lateinit var deliveryConfigRepository: DeliveryConfigRepository
-
-  @Autowired
-  lateinit var repository: KeelRepository
-
-  @Autowired
-  lateinit var jooq: DSLContext
 
   private fun KeelRepository.allResourceNames(): List<String> =
     mutableListOf<String>()

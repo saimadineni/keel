@@ -8,7 +8,7 @@ import com.netflix.spinnaker.keel.api.ResourceSpec
 import com.netflix.spinnaker.keel.core.api.randomUID
 import com.netflix.spinnaker.keel.events.ApplicationEvent
 import com.netflix.spinnaker.keel.events.PersistentEvent
-import com.netflix.spinnaker.keel.events.PersistentEvent.Scope
+import com.netflix.spinnaker.keel.events.PersistentEvent.EventScope
 import com.netflix.spinnaker.keel.events.ResourceEvent
 import com.netflix.spinnaker.keel.events.ResourceHistoryEvent
 import com.netflix.spinnaker.keel.pause.PauseScope
@@ -33,8 +33,6 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.Instant.EPOCH
-import java.time.LocalDateTime
-import java.time.ZoneOffset
 
 open class SqlResourceRepository(
   private val jooq: DSLContext,
@@ -103,16 +101,15 @@ open class SqlResourceRepository(
     }
   }
 
-  override fun hasManagedResources(application: String): Boolean {
-    return sqlRetry.withRetry(READ) {
+  override fun hasManagedResources(application: String): Boolean =
+    sqlRetry.withRetry(READ) {
       jooq
         .selectCount()
         .from(RESOURCE)
         .where(RESOURCE.APPLICATION.eq(application))
-        .fetchOne()
+        .fetchSingle()
         .value1() > 0
     }
-  }
 
   override fun getResourceIdsByApplication(application: String): List<String> {
     return sqlRetry.withRetry(READ) {
@@ -149,9 +146,9 @@ open class SqlResourceRepository(
       .execute()
     jooq.insertInto(RESOURCE_LAST_CHECKED)
       .set(RESOURCE_LAST_CHECKED.RESOURCE_UID, uid)
-      .set(RESOURCE_LAST_CHECKED.AT, EPOCH.plusSeconds(1).toTimestamp())
+      .set(RESOURCE_LAST_CHECKED.AT, EPOCH.plusSeconds(1))
       .onDuplicateKeyUpdate()
-      .set(RESOURCE_LAST_CHECKED.AT, EPOCH.plusSeconds(1).toTimestamp())
+      .set(RESOURCE_LAST_CHECKED.AT, EPOCH.plusSeconds(1))
       .set(RESOURCE_LAST_CHECKED.IGNORE, false)
       .execute()
   }
@@ -162,14 +159,12 @@ open class SqlResourceRepository(
       jooq
         .select(EVENT.JSON)
         .from(EVENT)
-        .where(EVENT.SCOPE.eq(Scope.APPLICATION.name))
+        .where(EVENT.SCOPE.eq(EventScope.APPLICATION))
         .and(EVENT.REF.eq(application))
         .orderBy(EVENT.TIMESTAMP.desc())
         .limit(limit)
-        .fetch()
-        .map { (json) ->
-          objectMapper.readValue<ApplicationEvent>(json)
-        }
+        .fetch(EVENT.JSON)
+        .filterIsInstance<ApplicationEvent>()
     }
   }
 
@@ -178,14 +173,12 @@ open class SqlResourceRepository(
       jooq
         .select(EVENT.JSON)
         .from(EVENT)
-        .where(EVENT.SCOPE.eq(Scope.APPLICATION.name))
+        .where(EVENT.SCOPE.eq(EventScope.APPLICATION))
         .and(EVENT.REF.eq(application))
-        .and(EVENT.TIMESTAMP.greaterOrEqual(LocalDateTime.ofInstant(after, ZoneOffset.UTC)))
+        .and(EVENT.TIMESTAMP.greaterOrEqual(after))
         .orderBy(EVENT.TIMESTAMP.desc())
-        .fetch()
-        .map { (json) ->
-          objectMapper.readValue<ApplicationEvent>(json)
-        }
+        .fetch(EVENT.JSON)
+        .filterIsInstance<ApplicationEvent>()
     }
   }
 
@@ -200,20 +193,17 @@ open class SqlResourceRepository(
         .from(EVENT)
         // look for resource events that match the resource...
         .where(
-          EVENT.SCOPE.eq(Scope.RESOURCE.name)
+          EVENT.SCOPE.eq(EventScope.RESOURCE)
             .and(EVENT.REF.eq(resource.uid))
         )
         // ...or application events that match the application as they apply to all resources
         .or(
-          EVENT.SCOPE.eq(Scope.APPLICATION.name)
+          EVENT.SCOPE.eq(EventScope.APPLICATION)
             .and(EVENT.APPLICATION.eq(resource.application))
         )
         .orderBy(EVENT.TIMESTAMP.desc())
         .limit(limit)
-        .fetch()
-        .map { (json) ->
-          objectMapper.readValue<PersistentEvent>(json)
-        }
+        .fetch(EVENT.JSON)
         // filter out application events that don't affect resource history
         .filterIsInstance<ResourceHistoryEvent>()
     }
@@ -241,20 +231,17 @@ open class SqlResourceRepository(
           .from(EVENT)
           // look for resource events that match the resource...
           .where(
-            EVENT.SCOPE.eq(Scope.RESOURCE.name)
+            EVENT.SCOPE.eq(EventScope.RESOURCE)
               .and(EVENT.REF.eq(ref))
           )
           // ...or application events that match the application as they apply to all resources
           .or(
-            EVENT.SCOPE.eq(Scope.APPLICATION.name)
+            EVENT.SCOPE.eq(EventScope.APPLICATION)
               .and(EVENT.APPLICATION.eq(event.application))
           )
           .orderBy(EVENT.TIMESTAMP.desc())
           .limit(1)
-          .fetchOne()
-          ?.let { (json) ->
-            objectMapper.readValue<PersistentEvent>(json) as? ResourceHistoryEvent
-          }
+          .fetchOne(EVENT.JSON)
 
         if (event.javaClass == previousEvent?.javaClass) return@transaction
       }
@@ -262,10 +249,10 @@ open class SqlResourceRepository(
       txn
         .insertInto(EVENT)
         .set(EVENT.UID, ULID().nextULID(event.timestamp.toEpochMilli()))
-        .set(EVENT.SCOPE, event.scope.name)
+        .set(EVENT.SCOPE, event.scope)
         .set(EVENT.REF, ref)
-        .set(EVENT.TIMESTAMP, event.timestamp.toTimestamp())
-        .set(EVENT.JSON, objectMapper.writeValueAsString(event))
+        .set(EVENT.TIMESTAMP, event.timestamp)
+        .set(EVENT.JSON, event)
         .execute()
     }
   }
@@ -287,7 +274,7 @@ open class SqlResourceRepository(
     }
     sqlRetry.withRetry(WRITE) {
       jooq.deleteFrom(EVENT)
-        .where(EVENT.SCOPE.eq(Scope.RESOURCE.name))
+        .where(EVENT.SCOPE.eq(EventScope.RESOURCE))
         .and(EVENT.REF.eq(uid.toString()))
         .execute()
     }
@@ -298,7 +285,7 @@ open class SqlResourceRepository(
     }
     sqlRetry.withRetry(WRITE) {
       jooq.deleteFrom(PAUSED)
-        .where(PAUSED.SCOPE.eq(PauseScope.RESOURCE.name))
+        .where(PAUSED.SCOPE.eq(PauseScope.RESOURCE))
         .and(PAUSED.NAME.eq(id))
         .execute()
     }
@@ -306,7 +293,7 @@ open class SqlResourceRepository(
 
   override fun itemsDueForCheck(minTimeSinceLastCheck: Duration, limit: Int): Collection<Resource<ResourceSpec>> {
     val now = clock.instant()
-    val cutoff = now.minus(minTimeSinceLastCheck).toTimestamp()
+    val cutoff = now.minus(minTimeSinceLastCheck)
     return sqlRetry.withRetry(WRITE) {
       jooq.inTransaction {
         select(RESOURCE_WITH_METADATA.UID, RESOURCE_WITH_METADATA.KIND, RESOURCE_WITH_METADATA.METADATA, RESOURCE_WITH_METADATA.SPEC)
@@ -322,9 +309,9 @@ open class SqlResourceRepository(
             it.forEach { (uid, _, _, _) ->
               insertInto(RESOURCE_LAST_CHECKED)
                 .set(RESOURCE_LAST_CHECKED.RESOURCE_UID, uid)
-                .set(RESOURCE_LAST_CHECKED.AT, now.toTimestamp())
+                .set(RESOURCE_LAST_CHECKED.AT, now)
                 .onDuplicateKeyUpdate()
-                .set(RESOURCE_LAST_CHECKED.AT, now.toTimestamp())
+                .set(RESOURCE_LAST_CHECKED.AT, now)
                 .execute()
             }
           }

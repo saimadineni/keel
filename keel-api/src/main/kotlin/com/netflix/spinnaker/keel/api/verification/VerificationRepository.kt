@@ -4,6 +4,7 @@ import com.netflix.spinnaker.keel.api.DeliveryConfig
 import com.netflix.spinnaker.keel.api.Environment
 import com.netflix.spinnaker.keel.api.Verification
 import com.netflix.spinnaker.keel.api.artifacts.DeliveryArtifact
+import java.time.Duration
 import java.time.Instant
 
 interface VerificationRepository {
@@ -17,6 +18,14 @@ interface VerificationRepository {
   ): VerificationState?
 
   /**
+   * @return a map of the current states of all verifications as run against [context]. The key of the map
+   * is the id of the Verification object
+   */
+  fun getStates(
+    context: VerificationContext,
+  ) : Map<String, VerificationState>
+
+  /**
    * Updates the state of [verification] as run against [context].
    */
   fun updateState(
@@ -24,6 +33,8 @@ interface VerificationRepository {
     verification: Verification,
     status: VerificationStatus
   )
+
+  fun nextEnvironmentsForVerification(minTimeSinceLastCheck: Duration, limit: Int) : Collection<VerificationContext>
 }
 
 data class VerificationState(
@@ -39,11 +50,14 @@ enum class VerificationStatus(val complete: Boolean) {
 data class VerificationContext(
   val deliveryConfig: DeliveryConfig,
   val environmentName: String,
+  val artifactReference: String,
   val version: String
 ) {
   val environment: Environment =
     deliveryConfig.environments.first { it.name == environmentName }
 
   val artifact: DeliveryArtifact =
-    deliveryConfig.artifacts.first()
+    deliveryConfig.artifacts.first { it.reference == artifactReference }
+
+  val verifications: Collection<Verification> = environment.verifyWith
 }

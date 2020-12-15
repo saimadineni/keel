@@ -1,7 +1,6 @@
 package com.netflix.spinnaker.keel.rest
 
 import com.netflix.spinnaker.keel.KeelApplication
-import com.netflix.spinnaker.keel.spring.test.DisableSpringScheduling
 import com.netflix.spinnaker.keel.spring.test.MockEurekaConfiguration
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -18,10 +17,8 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 )
 
 @AutoConfigureMockMvc
-@DisableSpringScheduling
-internal class ErrorSimulationControllerTests {
-  @Autowired
-  lateinit var mvc: MockMvc
+internal class ErrorSimulationControllerTests
+@Autowired constructor(val mvc: MockMvc) {
 
   @Test
   fun `error endpoint returns a 5xx server error`() {

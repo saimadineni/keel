@@ -9,7 +9,6 @@ import com.netflix.spinnaker.keel.KeelApplication
 import com.netflix.spinnaker.keel.clouddriver.CloudDriverService
 import com.netflix.spinnaker.keel.clouddriver.model.Network
 import com.netflix.spinnaker.keel.integration.AuthPropagationTests.MockFiat
-import com.netflix.spinnaker.keel.spring.test.DisableSpringScheduling
 import com.netflix.spinnaker.kork.common.Header.ACCOUNTS
 import com.netflix.spinnaker.kork.common.Header.USER
 import com.netflix.spinnaker.kork.common.Header.USER_ORIGIN
@@ -39,16 +38,14 @@ import strikt.assertions.isNotNull
   classes = [KeelApplication::class, MockFiat::class],
   webEnvironment = MOCK
 )
-@DisableSpringScheduling
-internal class AuthPropagationTests : JUnit5Minutests {
-
-  @Autowired
-  lateinit var cloudDriverService: CloudDriverService
+internal class AuthPropagationTests
+@Autowired constructor(val cloudDriverService: CloudDriverService) : JUnit5Minutests {
 
   @Configuration
   class MockFiat {
     val mockAccount = Account()
     val mockPermission = UserPermission()
+
     init {
       mockAccount.cloudProvider = "aws"
       mockAccount.name = "test"
